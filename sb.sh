@@ -38,7 +38,7 @@ echo "  sing-box 智能多协议综合部署脚本 (Reality/Hy2/AnyTLS)"
 echo "  安全特性: 地区自适应 | 双向防溯源 | 端口跳跃 | 彻底卸载"
 echo "=================================================="
 
-# 1. 探测公网 IP 与地理位置 (强制 IPv4 防止超时)
+# 1. 探测公网 IP 与地理位置 (强制 IPv4)
 printf "正在探测 VPS 所在地理位置..."
 PUB_IP=$(curl -s4 --connect-timeout 5 ifconfig.me || curl -s4 --connect-timeout 5 icanhazip.com || echo "127.0.0.1")
 COUNTRY_CODE=$(curl -s4 --connect-timeout 5 https://ipinfo.io/country 2>/dev/null || curl -s4 --connect-timeout 5 "http://ip-api.com/line?fields=countryCode" 2>/dev/null || echo "US")
@@ -258,12 +258,19 @@ case "$ARCH" in
     *) echo "错误: 不支持的 CPU 架构: $ARCH"; exit 1 ;;
 esac
 
-# 强制使用 IPv4 与伪装标头获取真实 302 目标 Tag
-LATEST_URL=$(curl -4 -fsSLI -A "Mozilla/5.0" -o /dev/null -w "%{url_effective}" https://github.com/SagerNet/sing-box/releases/latest 2>/dev/null || true)
-LATEST_TAG="${LATEST_URL##*/}"
+# 1. 尝试直接读取 GitHub Releases 最新 Tag (AnyTLS 要求核心版本 >= 1.12.0)
+LATEST_TAG=$(curl -4 -sI "https://github.com/SagerNet/sing-box/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's/.*tag\///' | tr -d ' \r\n')
 case "$LATEST_TAG" in
     v*) ;;
-    *)  LATEST_TAG="v1.11.4" ;;
+    *)
+        LATEST_TAG=$(curl -4 -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -n1 | cut -d'"' -f4)
+        ;;
+esac
+
+# 2. 兜底保障：最低版本强制设为稳定版 v1.14.4，绝对不再使用不支持 AnyTLS 的 v1.11.x
+case "$LATEST_TAG" in
+    v*) ;;
+    *)  LATEST_TAG="v1.14.4" ;;
 esac
 VER="${LATEST_TAG#v}"
 
@@ -282,7 +289,7 @@ if curl -4 -fL -A "Mozilla/5.0" --connect-timeout 8 --max-time 60 --retry 2 -o s
     fi
 fi
 
-# 源 2: FastGit / GHProxy 镜像源 (用于绕过 AWS 区域 CDN 波动)
+# 源 2: FastGit / GHProxy 镜像源
 if [ "$DOWNLOAD_SUCCESS" -eq 0 ]; then
     echo "官方直连受阻，自动切换至 [源 2] CDN 镜像分发源..."
     MIRROR_URL="https://ghproxy.net/${DOWNLOAD_URL}"
@@ -293,29 +300,24 @@ if [ "$DOWNLOAD_SUCCESS" -eq 0 ]; then
     fi
 fi
 
-# 解压并校验
+# 解压并部署
 if [ "$DOWNLOAD_SUCCESS" -eq 1 ]; then
     tar -xzf sb.tar.gz
     mv "sing-box-${VER}-linux-${SBARCH}/sing-box" /usr/local/bin/sing-box
     chmod +x /usr/local/bin/sing-box
     rm -rf sb.tar.gz "sing-box-${VER}-linux-${SBARCH}"
 else
-    # 源 3: 官方官方自动化包管理安装脚本兜底
-    echo "二进制镜像下载超时，正在调用 [源 3] 官方安装程序兜底安装..."
-    if curl -4 -fsSL https://sing-box.app/install.sh | sh; then
-        echo "官方脚本安装成功！"
-    else
-        echo "错误：全链路下载失败，请检查 VPS 是否能访问外网！"
-        exit 1
-    fi
+    echo "压缩包直接下载超时，正在调用官方安装脚本部署..."
+    curl -4 -fsSL https://sing-box.app/install.sh | sh
 fi
 
-# 检查可执行文件有效性
 SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
 if [ ! -x "$SB_BIN" ]; then
     echo "错误：sing-box 安装校验失败！"
     exit 1
 fi
+
+echo "核心版本校验: $($SB_BIN version | head -n1)"
 
 echo "[3/5] 生成加密凭据与安全证书..."
 mkdir -p /etc/sing-box/cert /etc/sing-box/rule-set /var/log/sing-box
