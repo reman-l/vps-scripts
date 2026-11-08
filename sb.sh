@@ -7,14 +7,12 @@ set -e
 do_uninstall() {
     echo -e "\n正在彻底卸载 sing-box 并清除所有相关数据与规则..."
     
-    # 1. 停止并清理防火墙与 ipset
     [ -f /etc/sing-box/firewall.sh ] && /bin/sh /etc/sing-box/firewall.sh stop 2>/dev/null || true
     if command -v ipset >/dev/null 2>&1; then
         ipset flush china_ip 2>/dev/null || true
         ipset destroy china_ip 2>/dev/null || true
     fi
 
-    # 2. 停止守护服务
     if command -v systemctl >/dev/null 2>&1; then
         systemctl stop sing-box 2>/dev/null || true
         systemctl disable sing-box 2>/dev/null || true
@@ -26,7 +24,6 @@ do_uninstall() {
         rm -f /etc/init.d/sing-box
     fi
 
-    # 3. 删除二进制核心与配置/日志/证书目录
     rm -f /usr/local/bin/sing-box /usr/local/bin/sb
     rm -rf /etc/sing-box /var/log/sing-box /run/sing-box.pid
 
@@ -41,10 +38,10 @@ echo "  sing-box 智能多协议综合部署脚本 (Reality/Hy2/AnyTLS)"
 echo "  安全特性: 地区自适应 | 双向防溯源 | 端口跳跃 | 彻底卸载"
 echo "=================================================="
 
-# 1. 探测公网 IP 与地理位置
+# 1. 探测公网 IP 与地理位置 (强制 IPv4 防止超时)
 printf "正在探测 VPS 所在地理位置..."
-PUB_IP=$(curl -s4 --connect-timeout 3 ifconfig.me || curl -s4 --connect-timeout 3 icanhazip.com || echo "127.0.0.1")
-COUNTRY_CODE=$(curl -s4 --connect-timeout 3 https://ipinfo.io/country 2>/dev/null || curl -s4 --connect-timeout 3 "http://ip-api.com/line?fields=countryCode" 2>/dev/null || echo "US")
+PUB_IP=$(curl -s4 --connect-timeout 5 ifconfig.me || curl -s4 --connect-timeout 5 icanhazip.com || echo "127.0.0.1")
+COUNTRY_CODE=$(curl -s4 --connect-timeout 5 https://ipinfo.io/country 2>/dev/null || curl -s4 --connect-timeout 5 "http://ip-api.com/line?fields=countryCode" 2>/dev/null || echo "US")
 COUNTRY_CODE=$(echo "$COUNTRY_CODE" | tr -d ' \r\n' | tr '[:lower:]' '[:upper:]')
 
 case "$COUNTRY_CODE" in
@@ -100,9 +97,14 @@ printf "请输入选项 [默认: 1 2 3 全部启用]: "
 read -r CHOICE </dev/tty
 [ -z "$CHOICE" ] && CHOICE="1 2 3"
 
-case "$CHOICE" in *0*) do_uninstall ;; esac
+case "$CHOICE" in
+    *0*) do_uninstall ;;
+esac
 
-ENABLE_REALITY=0; ENABLE_HY2=0; ENABLE_ANYTLS=0
+ENABLE_REALITY=0
+ENABLE_HY2=0
+ENABLE_ANYTLS=0
+
 case "$CHOICE" in *1*) ENABLE_REALITY=1 ;; esac
 case "$CHOICE" in *2*) ENABLE_HY2=1 ;; esac
 case "$CHOICE" in *3*) ENABLE_ANYTLS=1 ;; esac
@@ -120,7 +122,10 @@ echo "⚠️  若国内客户端【直接连接】本 VPS，开启会导致你�
 printf "是否开启入站屏蔽中国 IP？[y/N，默认: N]: "
 read -r INPUT_BLOCK_CN </dev/tty
 ENABLE_BLOCK_CN=0
-case "$INPUT_BLOCK_CN" in [yY][eE][sS]|[yY]) ENABLE_BLOCK_CN=1 ;; esac
+case "$INPUT_BLOCK_CN" in
+    [yY]*) ENABLE_BLOCK_CN=1 ;;
+    *)     ENABLE_BLOCK_CN=0 ;;
+esac
 
 # 4. 出站屏蔽 (防分流错误导致 VPN 溯源)
 echo "--------------------------------------------------"
@@ -128,8 +133,10 @@ echo "【功能 2: 出站防溯源设置 (防 VPN 溯源)】"
 echo "提示: 出站直接拒绝国内 IP、.cn 域名与常见国内站点，同时阻断私网内网。"
 printf "是否开启出站屏蔽中国大陆 (IP & 域名)？[Y/n，默认: Y]: "
 read -r INPUT_BLOCK_OUT_CN </dev/tty
-ENABLE_BLOCK_OUT_CN=1
-case "$INPUT_BLOCK_OUT_CN" in [nN][oO]|[nN]) ENABLE_BLOCK_OUT_CN=0 ;; esac
+case "$INPUT_BLOCK_OUT_CN" in
+    [nN]*) ENABLE_BLOCK_OUT_CN=0 ;;
+    *)     ENABLE_BLOCK_OUT_CN=1 ;;
+esac
 
 # 5. 出站套 WARP / SOCKS5 设置
 echo "--------------------------------------------------"
@@ -198,14 +205,17 @@ if [ "$ENABLE_HY2" -eq 1 ]; then
     echo "【功能 4: HY2 端口跳跃设置】"
     printf "是否启用 HY2 端口跳跃 (Port Hopping)？[Y/n，默认: Y]: "
     read -r INPUT_HOP </dev/tty
-    case "$INPUT_HOP" in [nN][oO]|[nN]) ENABLE_PORT_HOP=0 ;; *) ENABLE_PORT_HOP=1 ;; esac
+    case "$INPUT_HOP" in
+        [nN]*) ENABLE_PORT_HOP=0 ;;
+        *)     ENABLE_PORT_HOP=1 ;;
+    esac
 
     if [ "$ENABLE_PORT_HOP" -eq 1 ]; then
         printf "请输入跳跃端口范围 (起始:结束) [默认: 20000:50000]: "
         read -r INPUT_HRANGE </dev/tty
         HOP_INPUT=${INPUT_HRANGE:-"20000:50000"}
-        HOP_START=$(echo "$HOP_INPUT" | tr '-' ':' | cut -d':' -f1)
-        HOP_END=$(echo "$HOP_INPUT" | tr '-' ':' | cut -d':' -f2)
+        HOP_START="${HOP_INPUT%%[-:]*}"
+        HOP_END="${HOP_INPUT##*[-:]}"
         HOP_PORT_RANGE="${HOP_START}:${HOP_END}"
         HOP_DISPLAY="${HOP_START}-${HOP_END}"
     fi
@@ -248,39 +258,64 @@ case "$ARCH" in
     *) echo "错误: 不支持的 CPU 架构: $ARCH"; exit 1 ;;
 esac
 
-# 改进版：通过跟踪 302 重定向获取最新版本，彻底规避 GitHub API 403 限流
-LATEST_URL=$(curl -fsSLI -o /dev/null -w "%{url_effective}" https://github.com/SagerNet/sing-box/releases/latest 2>/dev/null || true)
+# 强制使用 IPv4 与伪装标头获取真实 302 目标 Tag
+LATEST_URL=$(curl -4 -fsSLI -A "Mozilla/5.0" -o /dev/null -w "%{url_effective}" https://github.com/SagerNet/sing-box/releases/latest 2>/dev/null || true)
 LATEST_TAG="${LATEST_URL##*/}"
 case "$LATEST_TAG" in
     v*) ;;
-    *)  LATEST_TAG="v1.14.4" ;;
+    *)  LATEST_TAG="v1.11.4" ;;
 esac
 VER="${LATEST_TAG#v}"
 
-echo "目标版本: ${LATEST_TAG} (${SBARCH})，正在下载官方核心..."
+echo "目标核心版本: ${LATEST_TAG} (${SBARCH})，启动多源下载..."
 cd /tmp
 rm -f sb.tar.gz
 
-# 带有重试与严格错误检查的下载
+DOWNLOAD_SUCCESS=0
+
+# 源 1: GitHub 官方源 (强制 IPv4，带重试与超时)
 DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${VER}-linux-${SBARCH}.tar.gz"
-if ! curl -fL --connect-timeout 10 --retry 3 -o sb.tar.gz "$DOWNLOAD_URL"; then
-    echo "最新版本下载失败，尝试下载备用稳定版 v1.14.4..."
-    LATEST_TAG="v1.14.4"
-    VER="1.14.4"
-    curl -fL --connect-timeout 10 --retry 3 -o sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${VER}-linux-${SBARCH}.tar.gz"
+echo "尝试 [源 1] GitHub 官方直连..."
+if curl -4 -fL -A "Mozilla/5.0" --connect-timeout 8 --max-time 60 --retry 2 -o sb.tar.gz "$DOWNLOAD_URL" 2>/dev/null; then
+    if [ -s sb.tar.gz ] && [ "$(wc -c < sb.tar.gz)" -gt 1000000 ]; then
+        DOWNLOAD_SUCCESS=1
+    fi
 fi
 
-# 校验下载文件是否为合格的压缩包
-if [ ! -s sb.tar.gz ] || [ "$(wc -c < sb.tar.gz)" -lt 100000 ]; then
-    echo "错误：核心下载失败或下载内容不完整！"
+# 源 2: FastGit / GHProxy 镜像源 (用于绕过 AWS 区域 CDN 波动)
+if [ "$DOWNLOAD_SUCCESS" -eq 0 ]; then
+    echo "官方直连受阻，自动切换至 [源 2] CDN 镜像分发源..."
+    MIRROR_URL="https://ghproxy.net/${DOWNLOAD_URL}"
+    if curl -4 -fL -A "Mozilla/5.0" --connect-timeout 8 --max-time 60 --retry 2 -o sb.tar.gz "$MIRROR_URL" 2>/dev/null; then
+        if [ -s sb.tar.gz ] && [ "$(wc -c < sb.tar.gz)" -gt 1000000 ]; then
+            DOWNLOAD_SUCCESS=1
+        fi
+    fi
+fi
+
+# 解压并校验
+if [ "$DOWNLOAD_SUCCESS" -eq 1 ]; then
+    tar -xzf sb.tar.gz
+    mv "sing-box-${VER}-linux-${SBARCH}/sing-box" /usr/local/bin/sing-box
+    chmod +x /usr/local/bin/sing-box
+    rm -rf sb.tar.gz "sing-box-${VER}-linux-${SBARCH}"
+else
+    # 源 3: 官方官方自动化包管理安装脚本兜底
+    echo "二进制镜像下载超时，正在调用 [源 3] 官方安装程序兜底安装..."
+    if curl -4 -fsSL https://sing-box.app/install.sh | sh; then
+        echo "官方脚本安装成功！"
+    else
+        echo "错误：全链路下载失败，请检查 VPS 是否能访问外网！"
+        exit 1
+    fi
+fi
+
+# 检查可执行文件有效性
+SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
+if [ ! -x "$SB_BIN" ]; then
+    echo "错误：sing-box 安装校验失败！"
     exit 1
 fi
-
-tar -xzf sb.tar.gz
-mv "sing-box-${VER}-linux-${SBARCH}/sing-box" /usr/local/bin/sing-box
-chmod +x /usr/local/bin/sing-box
-rm -rf sb.tar.gz "sing-box-${VER}-linux-${SBARCH}"
-SB_BIN="/usr/local/bin/sing-box"
 
 echo "[3/5] 生成加密凭据与安全证书..."
 mkdir -p /etc/sing-box/cert /etc/sing-box/rule-set /var/log/sing-box
@@ -414,11 +449,11 @@ fi
 ROUTE_BLOCK=""
 if [ "$ENABLE_BLOCK_OUT_CN" -eq 1 ]; then
     echo "正在下载 GeoIP / GeoSite 大陆规则库以启用出站防溯源..."
-    curl -fsSL "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs" -o /etc/sing-box/rule-set/geoip-cn.srs 2>/dev/null || \
-    curl -fsSL "https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs" -o /etc/sing-box/rule-set/geoip-cn.srs 2>/dev/null || true
+    curl -4 -fsSL -A "Mozilla/5.0" "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs" -o /etc/sing-box/rule-set/geoip-cn.srs 2>/dev/null || \
+    curl -4 -fsSL -A "Mozilla/5.0" "https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs" -o /etc/sing-box/rule-set/geoip-cn.srs 2>/dev/null || true
 
-    curl -fsSL "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs" -o /etc/sing-box/rule-set/geosite-cn.srs 2>/dev/null || \
-    curl -fsSL "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs" -o /etc/sing-box/rule-set/geosite-cn.srs 2>/dev/null || true
+    curl -4 -fsSL -A "Mozilla/5.0" "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs" -o /etc/sing-box/rule-set/geosite-cn.srs 2>/dev/null || \
+    curl -4 -fsSL -A "Mozilla/5.0" "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs" -o /etc/sing-box/rule-set/geosite-cn.srs 2>/dev/null || true
 
     if [ -s /etc/sing-box/rule-set/geoip-cn.srs ] && [ -s /etc/sing-box/rule-set/geosite-cn.srs ]; then
         RULESET_JSON='    "rule_set": [
@@ -491,11 +526,11 @@ EOF
 
 $SB_BIN check -c /etc/sing-box/config.json
 
-# 5. 配置防火墙脚本
+# 5. 配置防火墙管理脚本
 if [ "$ENABLE_BLOCK_CN" -eq 1 ]; then
     echo "正在拉取中国大陆 IP CIDR 网段库以启用入站屏蔽..."
-    curl -sSL "https://raw.githubusercontent.com/mayaxcn/china-ip-list/master/chnroute.txt" -o /etc/sing-box/cn.zone || \
-    curl -sSL "https://ispip.clang.cn/all_cn.txt" -o /etc/sing-box/cn.zone || true
+    curl -4 -sSL "https://raw.githubusercontent.com/mayaxcn/china-ip-list/master/chnroute.txt" -o /etc/sing-box/cn.zone 2>/dev/null || \
+    curl -4 -sSL "https://ispip.clang.cn/all_cn.txt" -o /etc/sing-box/cn.zone 2>/dev/null || true
 fi
 
 cat << 'EOF' > /etc/sing-box/firewall.sh
