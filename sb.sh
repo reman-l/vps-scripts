@@ -3,9 +3,42 @@ set -e
 
 [ "$(id -u)" -ne 0 ] && { echo "错误：请使用 root 权限执行！"; exit 1; }
 
+# 卸载清理函数
+do_uninstall() {
+    echo -e "\n正在彻底卸载 sing-box 并清除所有相关数据与规则..."
+    
+    # 1. 停止并清理防火墙与 ipset
+    [ -f /etc/sing-box/firewall.sh ] && /bin/sh /etc/sing-box/firewall.sh stop 2>/dev/null || true
+    if command -v ipset >/dev/null 2>&1; then
+        ipset flush china_ip 2>/dev/null || true
+        ipset destroy china_ip 2>/dev/null || true
+    fi
+
+    # 2. 停止守护服务
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop sing-box 2>/dev/null || true
+        systemctl disable sing-box 2>/dev/null || true
+        rm -f /etc/systemd/system/sing-box.service
+        systemctl daemon-reload 2>/dev/null || true
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service sing-box stop 2>/dev/null || true
+        rc-update del sing-box default 2>/dev/null || true
+        rm -f /etc/init.d/sing-box
+    fi
+
+    # 3. 删除二进制核心与配置/日志/证书目录
+    rm -f /usr/local/bin/sing-box /usr/local/bin/sb
+    rm -rf /etc/sing-box /var/log/sing-box /run/sing-box.pid
+
+    echo "=================================================="
+    echo " 卸载完成！sing-box 服务、配置、证书与防火墙规则已彻底清理干净。"
+    echo "=================================================="
+    exit 0
+}
+
 echo "=================================================="
 echo "  sing-box 智能多协议综合部署脚本 (Reality/Hy2/AnyTLS)"
-echo "  安全特性: 地区自适应 | 双向防溯源 (入站+出站双屏蔽) | WARP/SOCKS | HY2 端口跳跃"
+echo "  安全特性: 地区自适应 | 双向防溯源 | 端口跳跃 | 彻底卸载"
 echo "=================================================="
 
 # 1. 探测公网 IP 与地理位置
@@ -56,15 +89,19 @@ esac
 echo " 完成！[检测到: ${REGION_NAME} | IP: ${PUB_IP}]"
 echo "--------------------------------------------------"
 
-# 2. 选择协议
-echo "请选择要启用的协议 (输入编号，多个用空格隔开，直接回车全选):"
+# 2. 选择操作菜单
+echo "请选择操作模式 (输入编号，直接回车默认 1 2 3 全选安装):"
 echo "  1) VLESS-Reality (TCP / 偷窥伪装)"
 echo "  2) Hysteria 2    (UDP / 极速双边加速 / 支持端口跳跃)"
 echo "  3) AnyTLS        (TCP / 抗封锁 TLS-in-TLS 混淆)"
+echo "  0) 彻底卸载清理  (清理所有配置、服务、证书及防火墙规则)"
 echo "--------------------------------------------------"
 printf "请输入选项 [默认: 1 2 3 全部启用]: "
 read -r CHOICE </dev/tty
 [ -z "$CHOICE" ] && CHOICE="1 2 3"
+
+# 命中 0 立即进入卸载逻辑
+case "$CHOICE" in *0*) do_uninstall ;; esac
 
 ENABLE_REALITY=0; ENABLE_HY2=0; ENABLE_ANYTLS=0
 case "$CHOICE" in *1*) ENABLE_REALITY=1 ;; esac
@@ -356,7 +393,6 @@ else
     }"
 fi
 
-# 出站防溯源规则生成 (下载 SRS 规则库)
 ROUTE_BLOCK=""
 if [ "$ENABLE_BLOCK_OUT_CN" -eq 1 ]; then
     echo "正在下载 GeoIP / GeoSite 大陆规则库以启用出站防溯源..."
@@ -437,7 +473,7 @@ EOF
 
 $SB_BIN check -c /etc/sing-box/config.json
 
-# 5. 配置防火墙脚本 (管理 端口跳跃 与 入站屏蔽中国IP)
+# 5. 配置防火墙脚本
 if [ "$ENABLE_BLOCK_CN" -eq 1 ]; then
     echo "正在拉取中国大陆 IP CIDR 网段库以启用入站屏蔽..."
     curl -sSL "https://raw.githubusercontent.com/mayaxcn/china-ip-list/master/chnroute.txt" -o /etc/sing-box/cn.zone || \
